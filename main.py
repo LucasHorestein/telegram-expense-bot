@@ -21,12 +21,14 @@ VALID_CATEGORIES = [
     "Cursos", "Otros", "Regalos", "Seguros", "Tabaco", "Donaciones", "Inversiones"
 ]
 
+user_state = {}
+
 def send_telegram_message(chat_id, text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": chat_id, "text": text})
 
-def send_telegram_keyboard(chat_id, text, options):
-    keyboard = [[{"text": opt, "callback_data": opt}] for opt in options]
+def send_telegram_buttons(chat_id, text, options):
+    keyboard = [[{"text": opt, "callback_data": f"cat_{opt}"}] for opt in options]
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, json={
         "chat_id": chat_id,
@@ -36,46 +38,48 @@ def send_telegram_keyboard(chat_id, text, options):
 
 def save_to_sheets(date, descripcion, monto, categoria):
     try:
-        credentials = Credentials.from_service_account_info(json.loads(os.getenv("GOOGLE_CREDS")))
+        creds_json = os.getenv("GOOGLE_CREDS")
+        if not creds_json:
+            return False
+        credentials = Credentials.from_service_account_info(json.loads(creds_json))
         gc = gspread.authorize(credentials)
         sheet = gc.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
         sheet.append_row([date, "", date, descripcion, -monto, categoria, "Telegram"])
         return True
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error saving: {e}")
         return False
 
 @app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     data = request.json
-    message = data.get("message")
     
-    if not message:
-        return "ok"
-    
-    chat_id = message["chat"]["id"]
-    text = message.get("text", "").strip()
-    
-    if text == "/start":
-        send_telegram_message(chat_id, "Bienvenido! Formato: Descripción\nLuego te preguntaré categoría y monto.")
-        return "ok"
-    
-    parts = [p.strip() for p in text.split(" - ")]
-    
-    if len(parts) == 1:
-        # Primer step: descripción
-        descripcion = text
-        send_telegram_keyboard(chat_id, f"Descripción: {descripcion}\n\nElige categoría:", VALID_CATEGORIES)
-        return "ok"
-    
-    # TODO: implementar flujo completo con callbacks
-    
-    send_telegram_message(chat_id, "❌ Formato: Descripción - Categoría - Monto")
-    return "ok"
-
-@app.route("/")
-def index():
-    return "Bot running"
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    # Handle text messages
+    if "message" in data:
+        message = data["message"]
+        chat_id = message["chat"]["id"]
+        text = message.get("text", "").strip()
+        
+        if text == "/start":
+            send_telegram_message(chat_id, "¡Bienvenido! 👋\n\nVoy a ayudarte a registrar gastos.\n\n¿Cuál es la descripción del gasto?")
+            user_state[chat_id] = {"step": "descripcion"}
+            return "ok"
+        
+        # Step 1: Get description
+        if chat_id in user_state and user_state[chat_id]["step"] == "descripcion":
+            user_state[chat_id]["descripcion"] = text
+            user_state[chat_id]["step"] = "categoria"
+            send_telegram_buttons(chat_id, f"✅ Descripción: {text}\n\n¿Qué categoría?", VALID_CATEGORIES)
+            return "ok"
+        
+        # Step 3: Get amount (if coming from text, not callback)
+        if chat_id in user_state and user_state[chat_id]["step"] == "monto":
+            try:
+                monto = float(text)
+                if monto <= 0:
+                    raise ValueError
+                descripcion = user_state[chat_id]["descripcion"]
+                categoria = user_state[chat_id]["categoria"]
+                date = datetime.now().strftime("%m/%d/%Y")
+                
+                if save_to_sheets(date,
