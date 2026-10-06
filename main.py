@@ -82,4 +82,35 @@ def webhook():
                 categoria = user_state[chat_id]["categoria"]
                 date = datetime.now().strftime("%m/%d/%Y")
                 
-                if save_to_sheets(date,
+                if save_to_sheets(date, descripcion, monto, categoria):
+                    send_telegram_message(chat_id, f"✅ Gasto registrado:\n{descripcion}\n€{monto} - {categoria}")
+                else:
+                    send_telegram_message(chat_id, "❌ Error al guardar. Intenta de nuevo.")
+                
+                del user_state[chat_id]
+            except:
+                send_telegram_message(chat_id, "❌ Monto inválido. Escribe un número (ej: 5.50)")
+            return "ok"
+    
+    # Handle callback queries (button presses)
+    if "callback_query" in data:
+        callback = data["callback_query"]
+        chat_id = callback["from"]["id"]
+        callback_data = callback["data"]
+        
+        if callback_data.startswith("cat_"):
+            categoria = callback_data.replace("cat_", "")
+            user_state[chat_id]["categoria"] = categoria
+            user_state[chat_id]["step"] = "monto"
+            
+            send_telegram_message(chat_id, f"✅ Categoría: {categoria}\n\n¿Cuál es el monto? (ej: 5.50)")
+    
+    return "ok"
+
+@app.route("/")
+def index():
+    return "Bot running ✅"
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
